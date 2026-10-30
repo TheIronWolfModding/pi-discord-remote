@@ -52,14 +52,14 @@ describe("drainChunks", () => {
 
 describe("projectChannelName", () => {
   it("slugifies the project directory into a stable channel name", () => {
-    expect(projectChannelName("/media/vl/Dev/repos/gtr2-recompile")).toBe("gtr2-recompile");
-    expect(projectChannelName("/home/vl/Temp (weird) [x]")).toBe("temp-weird-x");
+    expect(projectChannelName("/media/user/Dev/repos/gtr2-recompile")).toBe("gtr2-recompile");
+    expect(projectChannelName("/home/user/Temp (weird) [x]")).toBe("temp-weird-x");
     expect(projectChannelName("/")).toBe("pi");
   });
 
   it("has no date/time so the same project reuses one channel", () => {
-    const a = projectChannelName("/home/vl/Temp");
-    const b = projectChannelName("/home/vl/Temp");
+    const a = projectChannelName("/home/user/Temp");
+    const b = projectChannelName("/home/user/Temp");
     expect(a).toBe(b);
     expect(a).toBe("temp");
   });
