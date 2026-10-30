@@ -75,6 +75,7 @@ export default function (pi: ExtensionAPI) {
   let lastCtx: any = null;
   const channelCache = new Map<string, TextChannel>();
   let lastPostedMessageId: string | null = null;
+  let turnPosted = false;
   let typingTimer: ReturnType<typeof setInterval> | null = null;
   interface StreamBuf {
     messageId: string;
@@ -149,6 +150,7 @@ export default function (pi: ExtensionAPI) {
       if (!channel) return;
       const msg = await channel.send(text);
       lastPostedMessageId = msg.id;
+      turnPosted = true;
     } catch (err) {
       console.error("[pi-discord-remote] Failed to send message:", err);
     }
@@ -371,6 +373,8 @@ export default function (pi: ExtensionAPI) {
     lastCtx = ctx ?? lastCtx;
     agentBusy = true;
     streamBuf = null;
+    lastPostedMessageId = null;
+    turnPosted = false;
     lastImageArtifactPath = null;
     startTypingIndicator();
   });
@@ -504,15 +508,14 @@ export default function (pi: ExtensionAPI) {
 
     if (!pendingReplyUserId) return;
 
-    // Signal end of turn: react ✅ on the last posted message, or post a note
-    // if nothing was streamed (e.g. an empty or aborted turn).
-    if (activeConfig?.reactions !== false && lastPostedMessageId) {
+    // Signal end of turn: react ✅ on the last posted message of this turn.
+    if (activeConfig?.reactions !== false && lastPostedMessageId && turnPosted) {
       try {
         const channel = await getOutputChannel();
         const msg = channel ? await channel.messages.fetch(lastPostedMessageId) : null;
         if (msg) await msg.react("✅");
       } catch { /* reaction is best-effort */ }
-    } else {
+    } else if (pendingReplyUserId) {
       await sendToActiveChannel(`✅ done <@${pendingReplyUserId}>`);
     }
     pendingReplyUserId = null;
