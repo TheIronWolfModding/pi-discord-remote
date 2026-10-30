@@ -41,6 +41,8 @@ import {
   isAbortLikeError,
   sleep,
   withTimeout,
+  drainChunks,
+  inboundAction,
 } from "./helpers.js";
 
 // ─── Reconnection constants ──────────────────────────────────────────────────
@@ -66,9 +68,22 @@ export default function (pi: ExtensionAPI) {
   let agentBusy = false;
   let pendingReplyChannelId: string | null = null;
   let pendingReplyUserId: string | null = null;
-  let collectedAssistantText: string[] = [];
-  let postedThinkingNotice = false;
   let lastImageArtifactPath: string | null = null;
+
+  // ── Output-streaming state ────────────────────────────────────────────
+  /** Latest ExtensionContext seen — used for Discord-side abort. */
+  let lastCtx: any = null;
+  const channelCache = new Map<string, TextChannel>();
+  let lastPostedMessageId: string | null = null;
+  let typingTimer: ReturnType<typeof setInterval> | null = null;
+  interface StreamBuf {
+    messageId: string;
+    sentThinking: number;
+    sentText: number;
+    pendingThinking: string;
+    pendingText: string;
+  }
+  let streamBuf: StreamBuf | null = null;
 
   // ── Reconnection state ────────────────────────────────────────────────
   let reconnectAttempt = 0;
@@ -105,12 +120,35 @@ export default function (pi: ExtensionAPI) {
 
   // ── Shared send helpers ──────────────────────────────────────────────────
 
-  async function sendToActiveChannel(text: string): Promise<void> {
-    if (!client || !pendingReplyChannelId) return;
+  /** Where Pi output goes: the session channel, not just the last reply target. */
+  function outputChannelId(): string | null {
+    return runtime.activeChannelId || pendingReplyChannelId || activeConfig?.channelId || null;
+  }
+
+  async function getOutputChannel(): Promise<TextChannel | null> {
+    const id = outputChannelId();
+    if (!id || !client) return null;
+    const cached = channelCache.get(id);
+    if (cached) return cached;
     try {
-      const channel = (await client.channels.fetch(pendingReplyChannelId)) as TextChannel | null;
-      if (!channel?.isTextBased()) return;
-      await (channel as TextChannel).send(text);
+      const channel = (await client.channels.fetch(id)) as TextChannel | null;
+      if (channel?.isTextBased()) {
+        channelCache.set(id, channel);
+        return channel;
+      }
+    } catch (err) {
+      console.error("[pi-discord-remote] Failed to fetch channel:", err);
+    }
+    return null;
+  }
+
+  async function sendToActiveChannel(text: string): Promise<void> {
+    if (!client || !outputChannelId()) return;
+    try {
+      const channel = await getOutputChannel();
+      if (!channel) return;
+      const msg = await channel.send(text);
+      lastPostedMessageId = msg.id;
     } catch (err) {
       console.error("[pi-discord-remote] Failed to send message:", err);
     }
@@ -118,7 +156,12 @@ export default function (pi: ExtensionAPI) {
 
   function getTargetChannelId(overrideChannelId?: string): string | null {
     const override = overrideChannelId?.trim();
-    return override || runtime.activeChannelId || activeConfig?.channelId || pendingReplyChannelId || null;
+    return override || outputChannelId();
+  }
+
+  function chunkLimit(): number {
+    const n = activeConfig?.chunkChars ?? 1900;
+    return Math.min(1900, Math.max(500, n));
   }
 
   async function sendMessageViaDiscordRest(params: {
@@ -270,14 +313,80 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // ── Collect assistant output ──────────────────────────────────────────────
+  // ── Output pipeline: stream everything to the session channel ─────────
+
+  function streamEnabled(): boolean {
+    return activeConfig?.stream !== false;
+  }
+
+  function thinkingText(content: any[]): string {
+    return content
+      .filter((c) => c.type === "thinking" && typeof c.thinking === "string")
+      .map((c) => c.thinking as string)
+      .join("");
+  }
+
+  function plainText(content: any[]): string {
+    return content
+      .filter((c) => c.type === "text" && typeof c.text === "string")
+      .map((c) => c.text as string)
+      .join("");
+  }
+
+  async function postThinking(chunk: string): Promise<void> {
+    if (!chunk.trim()) return;
+    for (const part of splitMessage(`💭 ${chunk.trim()}`)) await sendToActiveChannel(part);
+  }
+
+  async function postText(chunk: string): Promise<void> {
+    if (!chunk.trim()) return;
+    for (const part of splitMessage(chunk)) await sendToActiveChannel(part);
+  }
+
+  function getStreamBuf(messageId: string): StreamBuf {
+    if (!streamBuf || streamBuf.messageId !== messageId) {
+      streamBuf = { messageId, sentThinking: 0, sentText: 0, pendingThinking: "", pendingText: "" };
+    }
+    return streamBuf;
+  }
+
+  function startTypingIndicator(): void {
+    if (activeConfig?.typing === false) return;
+    stopTypingIndicator();
+    typingTimer = setInterval(async () => {
+      const channel = await getOutputChannel();
+      channel?.sendTyping().catch(() => {});
+    }, 8000);
+  }
+
+  function stopTypingIndicator(): void {
+    if (typingTimer) {
+      clearInterval(typingTimer);
+      typingTimer = null;
+    }
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  pi.on("agent_start", async (_event: any) => {
+  pi.on("agent_start", async (_event: any, ctx: any) => {
+    lastCtx = ctx ?? lastCtx;
     agentBusy = true;
-    collectedAssistantText = [];
-    postedThinkingNotice = false;
+    streamBuf = null;
     lastImageArtifactPath = null;
+    startTypingIndicator();
+  });
+
+  // Mirror prompts typed locally in the TUI so the remote view stays in sync.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pi.on("input", async (event: any, ctx: any) => {
+    lastCtx = ctx ?? lastCtx;
+    if (event.source !== "interactive") return { action: "continue" };
+    if (!client || !outputChannelId() || activeConfig?.mirrorLocalInput === false) {
+      return { action: "continue" };
+    }
+    const text = (event.text ?? "").trim();
+    if (!text || text.startsWith("/")) return { action: "continue" };
+    await sendToActiveChannel(`🖥️ ${text.slice(0, 1900)}`);
+    return { action: "continue" };
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -296,9 +405,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    if (!pendingReplyChannelId) {
-      return;
-    }
+    if (!client || !outputChannelId()) return;
 
     // Only send text summaries if toolResponses is enabled
     if (!activeConfig?.toolResponses) return;
@@ -322,73 +429,92 @@ export default function (pi: ExtensionAPI) {
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  pi.on("message_update", async (event: any) => {
-    if (!pendingReplyChannelId || postedThinkingNotice) return;
-    if (event.message.role !== "assistant") return;
-    const hasThinking = (event.message.content as Array<{ type: string }>)
-      .some((c) => c.type === "thinking");
-    if (hasThinking) {
-      postedThinkingNotice = true;
-      await sendToActiveChannel("💭 _Thinking…_");
+  pi.on("message_update", async (event: any, ctx: any) => {
+    lastCtx = ctx ?? lastCtx;
+    if (!client || !outputChannelId() || !streamEnabled()) return;
+    const message = event.message;
+    if (message?.role !== "assistant") return;
+
+    const buf = getStreamBuf(message.id);
+    const content = message.content as any[];
+    const thinking = thinkingText(content);
+    const text = plainText(content);
+
+    if (activeConfig?.thinking !== false && thinking.length > buf.sentThinking) {
+      buf.pendingThinking += thinking.slice(buf.sentThinking);
+      buf.sentThinking = thinking.length;
+      const { chunks, rest } = drainChunks(buf.pendingThinking, chunkLimit(), false);
+      buf.pendingThinking = rest;
+      for (const chunk of chunks) await postThinking(chunk);
+    }
+
+    if (text.length > buf.sentText) {
+      buf.pendingText += text.slice(buf.sentText);
+      buf.sentText = text.length;
+      const { chunks, rest } = drainChunks(buf.pendingText, chunkLimit(), false);
+      buf.pendingText = rest;
+      for (const chunk of chunks) await postText(chunk);
     }
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pi.on("tool_execution_start", async (event: any) => {
-    if (!pendingReplyChannelId) return;
+    if (!client || !outputChannelId()) return;
+    if (activeConfig?.toolCalls === false) return;
     // discord_ask_user_question is handled by our tool (formatted output)
     if (event.toolName === "discord_ask_user_question") return;
     await sendToActiveChannel(toolLabel(event.toolName, event.args));
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  pi.on("message_end", async (event: any) => {
-    if (!pendingReplyChannelId) return;
+  pi.on("message_end", async (event: any, ctx: any) => {
+    lastCtx = ctx ?? lastCtx;
+    if (!client || !outputChannelId()) return;
+    const message = event.message;
+    if (message?.role !== "assistant") return;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const content = event.message.content as Array<any>;
+    const content = message.content as Array<any>;
 
-    // Collect text from assistant messages
-    if (event.message.role === "assistant") {
-      const text = content
-        .filter((c) => c.type === "text" && typeof c.text === "string")
-        .map((c) => c.text as string)
-        .join("");
-      if (text.trim()) collectedAssistantText.push(text);
+    if (streamEnabled() && streamBuf && streamBuf.messageId === message.id) {
+      const buf = streamBuf;
+      const thinking = drainChunks(buf.pendingThinking, chunkLimit(), true);
+      buf.pendingThinking = thinking.rest;
+      for (const chunk of thinking.chunks) await postThinking(chunk);
+
+      const text = drainChunks(buf.pendingText, chunkLimit(), true);
+      buf.pendingText = text.rest;
+      for (const chunk of text.chunks) await postText(chunk);
+      streamBuf = null;
+      return;
     }
+
+    if (activeConfig?.thinking !== false) await postThinking(thinkingText(content));
+    await postText(plainText(content));
+    streamBuf = null;
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  pi.on("agent_end", async (_event: any) => {
+  pi.on("agent_end", async (_event: any, ctx: any) => {
+    lastCtx = ctx ?? lastCtx;
     agentBusy = false;
+    streamBuf = null;
+    stopTypingIndicator();
 
-    if (!pendingReplyChannelId || !client) {
-      pendingReplyChannelId = null;
-      collectedAssistantText = [];
-      return;
+    if (!client) return;
+
+    if (!pendingReplyUserId) return;
+
+    // Signal end of turn: react ✅ on the last posted message, or post a note
+    // if nothing was streamed (e.g. an empty or aborted turn).
+    if (activeConfig?.reactions !== false && lastPostedMessageId) {
+      try {
+        const channel = await getOutputChannel();
+        const msg = channel ? await channel.messages.fetch(lastPostedMessageId) : null;
+        if (msg) await msg.react("✅");
+      } catch { /* reaction is best-effort */ }
+    } else {
+      await sendToActiveChannel(`✅ done <@${pendingReplyUserId}>`);
     }
-
-    const text = collectedAssistantText.join("\n\n").trim();
-    // Clear state before sending so sendToActiveChannel still sees the channel ID
-    collectedAssistantText = [];
-    // pendingReplyChannelId cleared after send below
-
-    if (!text) {
-      pendingReplyChannelId = null;
-      pendingReplyUserId = null;
-      return;
-    }
-
-    const chunks = splitMessage(text);
-    // Prepend a mention to the last chunk so the sender is notified when work is done
-    const mention = pendingReplyUserId ? `<@${pendingReplyUserId}> ` : "";
-    const lastIdx = chunks.length - 1;
-    chunks[lastIdx] = mention + chunks[lastIdx];
-
-    for (const chunk of chunks) {
-      await sendToActiveChannel(chunk);
-    }
-    pendingReplyChannelId = null;
     pendingReplyUserId = null;
   });
 
@@ -398,12 +524,18 @@ export default function (pi: ExtensionAPI) {
     setStatusFn: (key: string, val: string | undefined) => void,
   ): Promise<void> {
     if (!client || !runtime.activeChannelId) return;
+    if (activeConfig?.keepChannel) {
+      console.error("[pi-discord-remote] keepChannel is set — channel left in place.");
+      return;
+    }
     try {
       const channel = (await client.channels.fetch(runtime.activeChannelId)) as TextChannel | null;
       if (channel) await channel.delete("Pi session ended");
     } catch (err) {
       console.error("[pi-discord-remote] Failed to delete channel:", err);
     }
+    channelCache.delete(runtime.activeChannelId);
+    lastPostedMessageId = null;
     runtime.activeChannelId = null;
     runtime.sessionChannelName = null;
     setStatusFn("pi-discord-remote", undefined);
@@ -477,6 +609,7 @@ export default function (pi: ExtensionAPI) {
     });
 
     client.on("messageCreate", buildMessageHandler());
+    attachAbortReactionListener(client);
     client.on("error", (err) => {
       console.error("[pi-discord-remote] Discord client error:", err);
       setStatus("pi-discord-remote", "⚠️ Discord: error");
@@ -547,8 +680,23 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      if (agentBusy) {
+      const action = inboundAction(agentBusy, activeConfig.steering !== false);
+
+      if (action === "reject") {
         await message.reply("⏳ Still processing the previous message — please wait.").catch(() => {});
+        return;
+      }
+
+      if (action === "steer") {
+        // Steering: inject into the running turn instead of rejecting.
+        try {
+          await pi.sendUserMessage(message.content, { deliverAs: "steer" });
+          if (activeConfig.reactions !== false) {
+            await message.react("📥").catch(() => {});
+          }
+        } catch (err: any) {
+          await message.reply(`❌ Steering failed: ${err.message}`).catch(() => {});
+        }
         return;
       }
 
@@ -558,9 +706,27 @@ export default function (pi: ExtensionAPI) {
 
       pendingReplyChannelId = message.channelId;
       pendingReplyUserId = message.author.id;
-      collectedAssistantText = [];
       pi.sendUserMessage(message.content);
     };
+  }
+
+  // 🛑 on any bot message in the session channel aborts the running turn.
+  function attachAbortReactionListener(c: Client): void {
+    c.on("messageReactionAdd", async (reaction, user) => {
+      if (user.bot || reaction.emoji.name !== "🛑") return;
+      if (reaction.message.channelId !== runtime.activeChannelId) return;
+      if (
+        activeConfig?.allowedUserIds?.length &&
+        !activeConfig.allowedUserIds.includes(user.id)
+      ) {
+        return;
+      }
+      if (!agentBusy) return;
+      if (lastCtx?.abort) {
+        console.error("[pi-discord-remote] 🛑 abort requested from Discord");
+        lastCtx.abort();
+      }
+    });
   }
 
   // ── Session cleanup ───────────────────────────────────────────────────────
@@ -624,6 +790,7 @@ export default function (pi: ExtensionAPI) {
     });
 
     client.on("messageCreate", buildMessageHandler());
+    attachAbortReactionListener(client);
 
     // ── Reconnection handling (for post-connect disconnects only) ──────
     client.on("error", (err) => {
@@ -1081,6 +1248,15 @@ export default function (pi: ExtensionAPI) {
             ...(allowedUserIds ? { allowedUserIds } : {}),
             reactions: true,
             toolResponses,
+            toolCalls: true,
+            stream: true,
+            thinking: true,
+            steering: true,
+            mirrorLocalInput: true,
+            typing: true,
+            chunkChars: 1900,
+            keepChannel: existing?.keepChannel ?? false,
+            autoConnect: existing?.autoConnect ?? false,
           };
 
           await saveConfig(cfg);
@@ -1154,6 +1330,17 @@ export default function (pi: ExtensionAPI) {
           break;
         }
 
+        // ── abort ─────────────────────────────────────────────────────────
+        case "abort": {
+          if (!agentBusy) {
+            ctx.ui.notify("Nothing is running.", "info");
+            return;
+          }
+          ctx.abort();
+          ctx.ui.notify("Aborted the current turn.", "info");
+          break;
+        }
+
         // ── open-config ───────────────────────────────────────────────────
         case "open-config": {
           const raw = existsSync(CONFIG_FILE)
@@ -1181,7 +1368,9 @@ export default function (pi: ExtensionAPI) {
               "/pi-discord-remote start       — create channel + connect",
               "/pi-discord-remote stop        — delete channel + disconnect",
               "/pi-discord-remote status      — show connection state",
+              "/pi-discord-remote abort       — abort the running turn",
               "/pi-discord-remote open-config — edit config JSON",
+              "Config options: steering, thinking, stream, toolCalls, mirrorLocalInput, typing, chunkChars, keepChannel, autoConnect",
             ].join("\n"),
             "info",
           );
@@ -1189,4 +1378,16 @@ export default function (pi: ExtensionAPI) {
       }
     },
   });
+
+  // ── Optional auto-connect (headless / RPC / --print sessions) ───────────
+  void (async () => {
+    const cfg = await loadConfig();
+    if (!cfg?.autoConnect) return;
+    await startClient(
+      cfg,
+      process.cwd(),
+      (msg, level) => console.error(`[pi-discord-remote] ${level}: ${msg}`),
+      () => {},
+    );
+  })();
 }

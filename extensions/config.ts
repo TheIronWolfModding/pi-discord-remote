@@ -7,7 +7,8 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-export const CONFIG_DIR = join(homedir(), ".pi", "agent", "pi-discord-remote");
+export const CONFIG_DIR =
+  process.env.PI_DISCORD_CONFIG_DIR?.trim() || join(homedir(), ".pi", "agent", "pi-discord-remote");
 export const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
 export interface Config {
@@ -24,6 +25,24 @@ export interface Config {
   reactions?: boolean;
   /** Also send tool responses (output/results) after each tool call (default: false) */
   toolResponses?: boolean;
+  /** Send tool-call labels to Discord (default: true) */
+  toolCalls?: boolean;
+  /** Stream assistant text/thinking in chunks while the turn is running (default: true) */
+  stream?: boolean;
+  /** Send thinking/reasoning blocks to Discord (default: true) */
+  thinking?: boolean;
+  /** Let Discord messages steer a running turn instead of being rejected (default: true) */
+  steering?: boolean;
+  /** Mirror prompts typed in the local TUI to Discord (default: true) */
+  mirrorLocalInput?: boolean;
+  /** Show a Discord typing indicator while Pi is working (default: true) */
+  typing?: boolean;
+  /** Soft chunk size for streamed messages, max 1900 (default: 1900) */
+  chunkChars?: number;
+  /** Keep the session channel after stop/shutdown instead of deleting it (default: false) */
+  keepChannel?: boolean;
+  /** Auto-connect when Pi starts, without running /pi-discord-remote start (default: false) */
+  autoConnect?: boolean;
 }
 
 export async function loadConfig(): Promise<Config | null> {
@@ -66,6 +85,15 @@ export function defaultConfigTemplate(): string {
         reactions: true,
         // Set to true to also post tool outputs/results after each tool call
         toolResponses: false,
+        toolCalls: true,
+        stream: true,
+        thinking: true,
+        steering: true,
+        mirrorLocalInput: true,
+        typing: true,
+        chunkChars: 1900,
+        keepChannel: false,
+        autoConnect: false,
       },
       null,
       2,
