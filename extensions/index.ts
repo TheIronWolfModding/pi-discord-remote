@@ -52,18 +52,16 @@ const RECONNECT_MAX_ATTEMPTS = 10;
 
 // ─── Extension ────────────────────────────────────────────────────────────────
 
-export default function (pi: ExtensionAPI) {
-  /** Mutable runtime state — never persisted to disk. */
-  interface RuntimeState {
-    /** The channel ID this session is listening on (created or fallback). */
-    activeChannelId: string | null;
-    /** Channel name at creation time (for display). */
-    sessionChannelName: string | null;
-  }
+// Connection state lives at module scope so `/reload` re-attaches to the live
+// Discord client instead of starting a fresh, unconnected instance.
+let client: Client | null = null;
+let activeConfig: Config | null = null;
+let runtime: {
+  activeChannelId: string | null;
+  sessionChannelName: string | null;
+} = { activeChannelId: null, sessionChannelName: null };
 
-  let client: Client | null = null;
-  let activeConfig: Config | null = null;
-  const runtime: RuntimeState = { activeChannelId: null, sessionChannelName: null };
+export default function (pi: ExtensionAPI) {
 
   let agentBusy = false;
   let pendingReplyChannelId: string | null = null;
@@ -785,12 +783,25 @@ export default function (pi: ExtensionAPI) {
     notifyFn: (msg: string, level: "success" | "error" | "warning" | "info") => void,
     setStatusFn: (key: string, val: string | undefined) => void,
   ): Promise<void> {
-    if (client) {
-      notifyFn("Already connected to Discord.", "warning");
+    activeConfig = cfg;
+
+    if (client?.isReady()) {
+      // Reload: re-attach the new instance's handlers to the live client.
+      client.removeAllListeners("messageCreate");
+      client.removeAllListeners("messageReactionAdd");
+      client.on("messageCreate", buildMessageHandler());
+      attachAbortReactionListener(client);
+      notifyFn(
+        `Re-attached to Discord #${runtime.sessionChannelName ?? runtime.activeChannelId}`,
+        "success",
+      );
+      setStatusFn(
+        "pi-discord-remote",
+        `🔌 Discord: #${runtime.sessionChannelName ?? runtime.activeChannelId ?? "(fallback)"}`,
+      );
       return;
     }
 
-    activeConfig = cfg;
     isShuttingDown = false;
     reconnectAttempt = 0;
     reconnectFailed = false;

@@ -32,6 +32,7 @@ const fakeChannel = {
 };
 
 const clients: any[] = [];
+let activeClient: any = null;
 
 vi.mock("discord.js", () => ({
   ChannelType: { GuildText: 0 },
@@ -47,9 +48,13 @@ vi.mock("discord.js", () => ({
     user = { tag: "fake-bot#1" };
     constructor() {
       clients.push(this);
+      activeClient = this;
     }
     on(name: string, fn: any) {
       this.handlers[name] = fn;
+    }
+    removeAllListeners(name: string) {
+      delete this.handlers[name];
     }
     once(name: string, fn: any) {
       if (name === "ready") fn(this);
@@ -129,7 +134,7 @@ async function startExtension(config: Record<string, unknown> = {}) {
   extension(pi);
   await handlers.__command("start", ctx);
 
-  return { sent, handlers, client: clients[0] };
+  return { sent, handlers, client: activeClient, ctx };
 }
 
 describe("Discord inbound wiring", () => {
@@ -155,6 +160,15 @@ describe("Discord inbound wiring", () => {
     handlers.agent_start({}, ctx);
     await client.handlers.messageCreate(fakeMessage("too early"));
     expect(sent.length).toBe(0);
+  });
+
+  it("re-attaches handlers on a second start (reload-safe)", async () => {
+    const { sent, handlers, client, ctx } = await startExtension();
+    // Simulate /reload: a new extension instance starts while the client is live.
+    await handlers.__command("start", ctx);
+    await client.handlers.messageCreate(fakeMessage("after reload"));
+    expect(sent.length).toBe(1);
+    expect(sent[0].content).toBe("after reload");
   });
 
   it("ignores messages from other channels and from bots", async () => {
