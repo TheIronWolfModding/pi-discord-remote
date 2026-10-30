@@ -1402,6 +1402,11 @@ export default function (pi: ExtensionAPI) {
           runtime.sessionChannelName = null;
           connectNotify = null;
           connectSetStatus = null;
+          streamBuf = null;
+          turnPosted = false;
+          lastPostedMessageId = null;
+          lastTextMessageId = null;
+          ctx.ui.setStatus("pi-discord-remote", undefined);
           logEvent("disconnect", "manual /pi-discord-remote stop");
           ctx.ui.notify("Disconnected from Discord.", "info");
           break;

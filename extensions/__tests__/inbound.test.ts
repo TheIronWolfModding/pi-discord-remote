@@ -8,6 +8,7 @@ const FAKE_USER_ID = "user-1";
 
 const posted: string[] = [];
 const reactions: string[] = [];
+const statuses: Array<string | undefined> = [];
 const edits: string[] = [];
 const deletedChannels: string[] = [];
 const fakeChannel = {
@@ -102,7 +103,9 @@ const ctx = {
   ui: {
     input: async () => undefined,
     notify: () => {},
-    setStatus: () => {},
+    setStatus: (_key: string, val?: string) => {
+      statuses.push(val);
+    },
     editor: async () => undefined,
   },
   abort: () => {
@@ -113,6 +116,7 @@ const ctx = {
 async function startExtension(config: Record<string, unknown> = {}) {
   posted.length = 0;
   reactions.length = 0;
+  statuses.length = 0;
   abortCalls = 0;
   edits.length = 0;
   deletedChannels.length = 0;
@@ -236,6 +240,13 @@ describe("Discord inbound wiring", () => {
     await client.handlers.messageCreate(msg);
     expect(sent.length).toBe(0);
     expect(msg._replies.length).toBe(1);
+  });
+
+  it("clears the status bar entry when stopped", async () => {
+    const { handlers, ctx } = await startExtension();
+    statuses.length = 0;
+    await handlers.__command("stop", ctx);
+    expect(statuses.at(-1)).toBeUndefined();
   });
 
   it("re-attaches handlers on a second start (reload-safe)", async () => {
