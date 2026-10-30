@@ -90,6 +90,8 @@ function fakeMessage(content: string, channelId = FAKE_CHANNEL_ID) {
   };
 }
 
+let abortCalls = 0;
+
 const ctx = {
   cwd: process.cwd(),
   ui: {
@@ -98,12 +100,15 @@ const ctx = {
     setStatus: () => {},
     editor: async () => undefined,
   },
-  abort: () => {},
+  abort: () => {
+    abortCalls++;
+  },
 };
 
 async function startExtension(config: Record<string, unknown> = {}) {
   posted.length = 0;
   reactions.length = 0;
+  abortCalls = 0;
   edits.length = 0;
   deletedChannels.length = 0;
   clients.length = 0;
@@ -142,7 +147,7 @@ async function startExtension(config: Record<string, unknown> = {}) {
   extension(pi);
   await handlers.__command("start", ctx);
 
-  return { sent, handlers, client: activeClient, ctx };
+  return { sent, handlers, client: activeClient, ctx, abortCalls: () => abortCalls };
 }
 
 describe("Discord inbound wiring", () => {
@@ -182,6 +187,34 @@ describe("Discord inbound wiring", () => {
     expect(deletedChannels.length).toBe(1);
     // reset shared client so later tests reconnect
     await startExtension();
+  });
+
+  it("aborts the running turn when someone reacts 🛑", async () => {
+    const { handlers, client, ctx, abortCalls } = await startExtension();
+    await handlers.agent_start({}, ctx);
+    await client.handlers.messageReactionAdd(
+      {
+        emoji: { name: "🛑" },
+        message: { channelId: FAKE_CHANNEL_ID },
+      },
+      { bot: false, id: FAKE_USER_ID },
+    );
+    expect(abortCalls()).toBe(1);
+  });
+
+  it("ignores 🛑 when Pi is idle or from a non-allowlisted user", async () => {
+    const { handlers, client, ctx, abortCalls } = await startExtension();
+    // idle: no agent_start called
+    await client.handlers.messageReactionAdd(
+      { emoji: { name: "🛑" }, message: { channelId: FAKE_CHANNEL_ID } },
+      { bot: false, id: FAKE_USER_ID },
+    );
+    await handlers.agent_start({}, ctx);
+    await client.handlers.messageReactionAdd(
+      { emoji: { name: "🛑" }, message: { channelId: "chan-2" } },
+      { bot: false, id: "someone-else" },
+    );
+    expect(abortCalls()).toBe(0);
   });
 
   it("re-attaches handlers on a second start (reload-safe)", async () => {
