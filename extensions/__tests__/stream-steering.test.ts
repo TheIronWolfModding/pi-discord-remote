@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { drainChunks, inboundAction } from "../helpers.js";
+import { drainChunks, inboundAction, projectChannelName } from "../helpers.js";
 
 // ─── drainChunks: streaming output into Discord-sized pieces ─────────────────
 
@@ -47,6 +47,21 @@ describe("drainChunks", () => {
   it("emits nothing for whitespace-only remainder when forcing", () => {
     const { chunks } = drainChunks("   \n\n  ", 1900, true);
     expect(chunks).toEqual([]);
+  });
+});
+
+describe("projectChannelName", () => {
+  it("slugifies the project directory into a stable channel name", () => {
+    expect(projectChannelName("/media/vl/Dev/repos/gtr2-recompile")).toBe("gtr2-recompile");
+    expect(projectChannelName("/home/vl/Temp (weird) [x]")).toBe("temp-weird-x");
+    expect(projectChannelName("/")).toBe("pi");
+  });
+
+  it("has no date/time so the same project reuses one channel", () => {
+    const a = projectChannelName("/home/vl/Temp");
+    const b = projectChannelName("/home/vl/Temp");
+    expect(a).toBe(b);
+    expect(a).toBe("temp");
   });
 });
 

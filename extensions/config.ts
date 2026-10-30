@@ -45,6 +45,10 @@ export interface Config {
   keepChannel?: boolean;
   /** Auto-connect when Pi starts, without running /pi-discord-remote start (default: false) */
   autoConnect?: boolean;
+  /** "project" (default) reuses one channel per project dir; "session" creates a channel per session */
+  channelMode?: "project" | "session";
+  /** Project slug → channel ID, maintained automatically in project mode */
+  projectChannels?: Record<string, string>;
 }
 
 export async function loadConfig(): Promise<Config | null> {
@@ -97,6 +101,8 @@ export function defaultConfigTemplate(): string {
         chunkChars: 1900,
         keepChannel: false,
         autoConnect: false,
+        channelMode: "project",
+        projectChannels: {},
       },
       null,
       2,

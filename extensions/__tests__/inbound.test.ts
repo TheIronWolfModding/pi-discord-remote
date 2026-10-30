@@ -9,9 +9,14 @@ const FAKE_USER_ID = "user-1";
 const posted: string[] = [];
 const reactions: string[] = [];
 const edits: string[] = [];
+const deletedChannels: string[] = [];
 const fakeChannel = {
   id: FAKE_CHANNEL_ID,
   isTextBased: () => true,
+  name: "temp",
+  delete: async (reason: string) => {
+    deletedChannels.push(reason);
+  },
   send: (text: string) => {
     posted.push(text);
     return Promise.resolve({ id: `msg-${posted.length}` });
@@ -67,7 +72,9 @@ vi.mock("discord.js", () => ({
       return true;
     }
     guilds = {
-      fetch: async () => ({ channels: { create: async () => fakeChannel } }),
+      fetch: async () => ({
+        channels: { cache: [], create: async () => fakeChannel },
+      }),
     };
     channels = { fetch: async () => fakeChannel };
   },
@@ -98,6 +105,7 @@ async function startExtension(config: Record<string, unknown> = {}) {
   posted.length = 0;
   reactions.length = 0;
   edits.length = 0;
+  deletedChannels.length = 0;
   clients.length = 0;
 
   const sent: Array<{ content: string; options?: any }> = [];
@@ -160,6 +168,20 @@ describe("Discord inbound wiring", () => {
     handlers.agent_start({}, ctx);
     await client.handlers.messageCreate(fakeMessage("too early"));
     expect(sent.length).toBe(0);
+  });
+
+  it("keeps the project channel on stop instead of deleting it", async () => {
+    const { handlers, ctx } = await startExtension();
+    await handlers.__command("stop", ctx);
+    expect(deletedChannels.length).toBe(0);
+  });
+
+  it("deletes the channel in session mode", async () => {
+    const { handlers, ctx } = await startExtension({ channelMode: "session" });
+    await handlers.__command("stop", ctx);
+    expect(deletedChannels.length).toBe(1);
+    // reset shared client so later tests reconnect
+    await startExtension();
   });
 
   it("re-attaches handlers on a second start (reload-safe)", async () => {

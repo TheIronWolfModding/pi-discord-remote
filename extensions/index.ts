@@ -36,6 +36,7 @@ import { loadConfig, saveConfig, CONFIG_FILE, defaultConfigTemplate } from "./co
 import type { Config } from "./config.js";
 import {
   makeChannelName,
+  projectChannelName,
   splitMessage,
   toolLabel,
   isAbortLikeError,
@@ -543,8 +544,10 @@ export default function (pi: ExtensionAPI) {
     setStatusFn: (key: string, val: string | undefined) => void,
   ): Promise<void> {
     if (!client || !runtime.activeChannelId) return;
-    if (activeConfig?.keepChannel) {
-      console.error("[pi-discord-remote] keepChannel is set — channel left in place.");
+    if (activeConfig?.keepChannel || (activeConfig?.channelMode ?? "project") === "project") {
+      console.error(
+        `[pi-discord-remote] Keeping channel #${runtime.sessionChannelName ?? runtime.activeChannelId} (persistent mode).`,
+      );
       return;
     }
     try {
@@ -844,27 +847,59 @@ export default function (pi: ExtensionAPI) {
       const timeout = setTimeout(() => reject(new Error("ready timeout (30s)")), 30_000);
       client!.once("ready", async (c) => {
         clearTimeout(timeout);
-        // Channel creation happens inside this single ready handler
-        const channelName = makeChannelName(cwd);
+        // Channel selection happens inside this single ready handler
+        const mode = cfg.channelMode ?? "project";
+        const projectKey = projectChannelName(cwd);
         try {
           const guild = await c.guilds.fetch(cfg.guildId);
-          const newChannel = await guild.channels.create({
-            name: channelName,
-            type: ChannelType.GuildText,
-            ...(cfg.categoryId ? { parent: cfg.categoryId } : {}),
-            topic: `Pi session — ${cwd}`,
-          });
-          runtime.activeChannelId = newChannel.id;
-          runtime.sessionChannelName = channelName;
+          let channel: TextChannel | null = null;
 
-          const label = `🔌 Discord: #${channelName}`;
-          notifyFn(`Connected as ${c.user.tag} → #${channelName}`, "success");
+          if (mode === "project") {
+            const knownId = cfg.projectChannels?.[projectKey];
+            if (knownId) {
+              try {
+                const fetched = (await c.channels.fetch(knownId)) as TextChannel | null;
+                if (fetched?.isTextBased()) channel = fetched;
+              } catch { /* stale mapping — recreate below */ }
+            }
+            if (!channel) {
+              channel =
+                (guild.channels.cache.find(
+                  (ch) => ch.name === projectKey && ch.type === ChannelType.GuildText,
+                ) as TextChannel | null) ?? null;
+            }
+            if (!channel) {
+              channel = await guild.channels.create({
+                name: projectKey,
+                type: ChannelType.GuildText,
+                ...(cfg.categoryId ? { parent: cfg.categoryId } : {}),
+                topic: `Pi sessions — ${cwd}`,
+              });
+            }
+            await saveConfig({
+              ...cfg,
+              projectChannels: { ...(cfg.projectChannels ?? {}), [projectKey]: channel.id },
+            }).catch(() => {});
+          } else {
+            channel = await guild.channels.create({
+              name: makeChannelName(cwd),
+              type: ChannelType.GuildText,
+              ...(cfg.categoryId ? { parent: cfg.categoryId } : {}),
+              topic: `Pi session — ${cwd}`,
+            });
+          }
+
+          runtime.activeChannelId = channel.id;
+          runtime.sessionChannelName = channel.name;
+
+          const label = `🔌 Discord: #${channel.name}`;
+          notifyFn(`Connected as ${c.user.tag} → #${channel.name}`, "success");
           setStatusFn("pi-discord-remote", label);
         } catch (err) {
-          // Channel creation failed — fall back to configured channelId
-          console.error("[pi-discord-remote] Could not create channel:", err);
+          // Channel selection failed — fall back to configured channelId
+          console.error("[pi-discord-remote] Could not select/create channel:", err);
           notifyFn(
-            `⚠️ Could not create channel (check Manage Channels permission). Falling back to configured channelId.`,
+            `⚠️ Could not select channel (check Manage Channels permission). Falling back to configured channelId.`,
             "warning",
           );
           runtime.activeChannelId = cfg.channelId ?? null;
@@ -1341,6 +1376,7 @@ export default function (pi: ExtensionAPI) {
               `✅ Connected as ${client.user.tag}\n` +
                 `   Channel: #${runtime.sessionChannelName ?? runtime.activeChannelId ?? "(fallback)"}\n` +
                 `   Channel ID: ${runtime.activeChannelId ?? "(unknown)"}\n` +
+                `   Mode: ${activeConfig?.channelMode ?? "project"}\n` +
                 `   Allow-list: ${activeConfig?.allowedUserIds?.join(", ") || "everyone"}`,
               "info",
             );
@@ -1402,7 +1438,7 @@ export default function (pi: ExtensionAPI) {
               "/pi-discord-remote status      — show connection state",
               "/pi-discord-remote abort       — abort the running turn",
               "/pi-discord-remote open-config — edit config JSON",
-              "Config options: steering, thinking, stream, toolCalls, mirrorLocalInput, typing, chunkChars, keepChannel, autoConnect",
+              "Config options: steering, thinking, stream, toolCalls, mirrorLocalInput, typing, chunkChars, mention, channelMode (project|session), keepChannel, autoConnect",
             ].join("\n"),
             "info",
           );

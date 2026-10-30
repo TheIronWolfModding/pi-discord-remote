@@ -4,6 +4,17 @@
 
 import { basename } from "node:path";
 
+/** Discord-safe, stable channel name for a project directory (no date/time). */
+export function projectChannelName(cwd: string): string {
+  const dir = basename(cwd) || "pi";
+  const raw = dir
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-|-$/g, "");
+  return (raw || "pi").slice(0, 50);
+}
+
 /** Generate a Discord-safe channel name from cwd + short date + time (HH-MM). */
 export function makeChannelName(cwd: string): string {
   const dir = basename(cwd) || "pi";
