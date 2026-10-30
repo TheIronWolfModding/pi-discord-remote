@@ -139,7 +139,10 @@ export default function (pi: ExtensionAPI) {
     const id = outputChannelId();
     if (!id || !client) return null;
     const cached = channelCache.get(id);
-    if (cached) return cached;
+    // A cached channel is bound to the client that fetched it. After a reload,
+    // reconnect or manual stop that client is destroyed, and using it throws
+    // "Expected token to be set for this request". Refetch in that case.
+    if (cached && cached.client === client) return cached;
     try {
       const channel = (await client.channels.fetch(id)) as TextChannel | null;
       if (channel?.isTextBased()) {
@@ -627,6 +630,7 @@ export default function (pi: ExtensionAPI) {
     if (client) {
       await client.destroy().catch(() => {});
       client = null;
+      channelCache.clear();
     }
 
     const cfg = activeConfig;
@@ -797,12 +801,14 @@ export default function (pi: ExtensionAPI) {
     // Don't destroy Discord client on reload — just re-register handlers
     if (event?.reason === "reload") {
       isShuttingDown = false;
+      channelCache.clear();
       return;
     }
     if (client) {
       await deleteSessionChannel((_k, _v) => {});
       await client.destroy().catch(() => {});
       client = null;
+      channelCache.clear();
       activeConfig = null;
       runtime.activeChannelId = null;
       runtime.sessionChannelName = null;
@@ -1413,6 +1419,7 @@ export default function (pi: ExtensionAPI) {
           await deleteSessionChannel((key, val) => ctx.ui.setStatus(key, val));
           await client.destroy().catch(() => {});
           client = null;
+          channelCache.clear();
           activeConfig = null;
           runtime.activeChannelId = null;
           runtime.sessionChannelName = null;
