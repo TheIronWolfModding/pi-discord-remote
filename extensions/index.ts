@@ -717,6 +717,23 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      // A bare "🛑" (or :stop:) sent as a message also aborts the running turn.
+      const normalized = message.content.trim().toLowerCase();
+      if (normalized === "🛑" || normalized === ":stop:" || normalized === "stop") {
+        if (!agentBusy) {
+          await message.reply("Nothing is running to abort.").catch(() => {});
+          return;
+        }
+        if (lastCtx?.abort) {
+          logEvent("abort", "abort requested from Discord stop message");
+          lastCtx.abort();
+          await message.react("🛑").catch(() => {});
+        } else {
+          await message.reply("⚠️ Abort context not available.").catch(() => {});
+        }
+        return;
+      }
+
       const action = inboundAction(agentBusy, activeConfig.steering !== false);
 
       if (action === "reject") {

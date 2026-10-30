@@ -81,12 +81,17 @@ vi.mock("discord.js", () => ({
 }));
 
 function fakeMessage(content: string, channelId = FAKE_CHANNEL_ID) {
+  const replies: string[] = [];
   return {
     author: { bot: false, id: FAKE_USER_ID },
     channelId,
     content,
     react: async () => {},
-    reply: async () => {},
+    reply: async (text: string) => {
+      replies.push(text);
+      return {};
+    },
+    _replies: replies,
   };
 }
 
@@ -215,6 +220,22 @@ describe("Discord inbound wiring", () => {
       { bot: false, id: "someone-else" },
     );
     expect(abortCalls()).toBe(0);
+  });
+
+  it("aborts when a bare 🛑 message is sent", async () => {
+    const { handlers, client, ctx, sent, abortCalls } = await startExtension();
+    await handlers.agent_start({}, ctx);
+    await client.handlers.messageCreate(fakeMessage("🛑"));
+    expect(abortCalls()).toBe(1);
+    expect(sent.length).toBe(0);
+  });
+
+  it("replies when 🛑 is sent while idle", async () => {
+    const { handlers, client, ctx, sent } = await startExtension();
+    const msg = fakeMessage("stop");
+    await client.handlers.messageCreate(msg);
+    expect(sent.length).toBe(0);
+    expect(msg._replies.length).toBe(1);
   });
 
   it("re-attaches handlers on a second start (reload-safe)", async () => {

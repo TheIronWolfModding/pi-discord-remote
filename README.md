@@ -95,8 +95,8 @@ The extension loads silently on Pi startup — no channel is created until you e
   when you work at the keyboard — output is posted to the session channel regardless
   of who started the turn.
 - **Thinking is streamed** as `💭 …` chunks (disable with `"thinking": false`).
-- **Abort from Discord**: react 🛑 on any bot message in the session channel, or run
-  `/pi-discord-remote abort` in Pi.
+- **Abort from Discord**: react 🛑 on any bot message, send a bare `🛑` / `stop`
+  message, or run `/pi-discord-remote abort` in Pi.
 
 ### Optional image skill tool
 
