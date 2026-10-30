@@ -242,6 +242,18 @@ describe("Discord inbound wiring", () => {
     expect(msg._replies.length).toBe(1);
   });
 
+  it("lets ask_user_question through when no Discord channel is bound", async () => {
+    const { handlers, ctx } = await startExtension();
+    await handlers.__command("stop", ctx);
+    expect(await handlers.tool_call({ toolName: "ask_user_question" }, ctx)).toBeUndefined();
+  });
+
+  it("redirects ask_user_question to Discord while connected", async () => {
+    const { handlers, ctx, client } = await startExtension();
+    const res = await handlers.tool_call({ toolName: "ask_user_question" }, ctx);
+    expect(res?.block).toBe(true);
+  });
+
   it("clears the status bar entry when stopped", async () => {
     const { handlers, ctx } = await startExtension();
     statuses.length = 0;

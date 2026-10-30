@@ -970,8 +970,11 @@ export default function (pi: ExtensionAPI) {
   // When Discord is not connected, let the original tool through as fallback.
   pi.on("tool_call", async (event, _ctx) => {
     if (event.toolName !== "ask_user_question") return;
-    if (!client?.isReady()) return; // Discord not ready — let TUI tool work
-    return { block: true, reason: "Discord is connected — use discord_ask_user_question instead." };
+    // Only block the TUI tool when the Discord path can actually be used,
+    // otherwise both tools refuse and the agent deadlocks.
+    if (client?.isReady() && (pendingReplyChannelId || outputChannelId())) {
+      return { block: true, reason: "Discord is connected — use discord_ask_user_question instead." };
+    }
   });
 
   // ── System prompt hint: prefer Discord version when connected ──────────
@@ -1026,16 +1029,29 @@ export default function (pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
-      const channelId = pendingReplyChannelId;
-      if (!client || !channelId) {
+      // pendingReplyChannelId is only set when a Discord message started the turn.
+      // For locally started turns fall back to the project/session channel.
+      const channelId = pendingReplyChannelId ?? outputChannelId();
+      if (!client?.isReady()) {
         return {
           content: [
             {
               type: "text",
-              text: "Discord not connected. Please answer in the Pi TUI directly.",
+              text: "Discord gateway is not ready. Use ask_user_question (TUI) instead.",
             },
           ],
           details: { answers: [], cancelled: true, error: "no_ui" },
+        };
+      }
+      if (!channelId) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No Discord channel is bound to this session. Use ask_user_question (TUI) instead.",
+            },
+          ],
+          details: { answers: [], cancelled: true, error: "no_channel" },
         };
       }
 
