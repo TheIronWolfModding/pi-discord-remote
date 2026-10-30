@@ -506,8 +506,6 @@ export default function (pi: ExtensionAPI) {
 
     if (!client) return;
 
-    if (!pendingReplyUserId) return;
-
     // Signal end of turn: react ✅ on the last posted message of this turn.
     if (activeConfig?.reactions !== false && lastPostedMessageId && turnPosted) {
       try {
