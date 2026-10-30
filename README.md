@@ -124,6 +124,18 @@ Pi's TUI-only `ask_user_question` dialog (from `@juicesharp/rpiv-ask-user-questi
 
 When Discord **is not** connected, the original `ask_user_question` (TUI dialog) works normally as a fallback. No need to uninstall `@juicesharp/rpiv-ask-user-question` — the two extensions coexist gracefully.
 
+## Diagnosing connection problems
+
+Every Discord event (connect, gateway disconnect, reconnect attempt, login error, send/mention/reaction failure, 🛑 abort) is appended to:
+
+```text
+~/.pi/agent/pi-discord-remote/diagnostics.log     # override with PI_DISCORD_LOG_DIR
+```
+
+- `/pi-discord-remote status` — channel, output target, gateway ready state, last posted message id, last error
+- `/pi-discord-remote debug 50` — tail the last 50 log lines inside Pi
+- The log is plain text, so an agent with shell access can read it directly
+
 ## License
 
 MIT
