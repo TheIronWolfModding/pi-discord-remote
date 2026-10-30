@@ -37,6 +37,8 @@ export interface Config {
   mirrorLocalInput?: boolean;
   /** Show a Discord typing indicator while Pi is working (default: true) */
   typing?: boolean;
+  /** Mention (tag) the user on the final response of each turn (default: true) */
+  mention?: boolean;
   /** Soft chunk size for streamed messages, max 1900 (default: 1900) */
   chunkChars?: number;
   /** Keep the session channel after stop/shutdown instead of deleting it (default: false) */
@@ -91,6 +93,7 @@ export function defaultConfigTemplate(): string {
         steering: true,
         mirrorLocalInput: true,
         typing: true,
+        mention: true,
         chunkChars: 1900,
         keepChannel: false,
         autoConnect: false,

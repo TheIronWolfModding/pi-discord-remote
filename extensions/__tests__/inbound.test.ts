@@ -8,6 +8,7 @@ const FAKE_USER_ID = "user-1";
 
 const posted: string[] = [];
 const reactions: string[] = [];
+const edits: string[] = [];
 const fakeChannel = {
   id: FAKE_CHANNEL_ID,
   isTextBased: () => true,
@@ -16,9 +17,14 @@ const fakeChannel = {
     return Promise.resolve({ id: `msg-${posted.length}` });
   },
   messages: {
-    fetch: async () => ({
+    fetch: async (id: string) => ({
+      id,
+      content: posted[posted.length - 1] ?? "",
       react: async (emoji: string) => {
         reactions.push(emoji);
+      },
+      edit: async (text: string) => {
+        edits.push(text);
       },
     }),
   },
@@ -86,6 +92,7 @@ const ctx = {
 async function startExtension(config: Record<string, unknown> = {}) {
   posted.length = 0;
   reactions.length = 0;
+  edits.length = 0;
   clients.length = 0;
 
   const sent: Array<{ content: string; options?: any }> = [];
@@ -179,6 +186,7 @@ describe("output pipeline", () => {
     expect(joined).toContain("bash");
     expect(joined).toContain("done");
     expect(reactions).toContain("✅");
+    expect(edits.some((e) => e.startsWith("<@user-1> ") && e.includes("done"))).toBe(true);
   });
 
   it("streams thinking and long text in Discord-sized chunks", async () => {
@@ -231,6 +239,31 @@ describe("output pipeline", () => {
     );
     await handlers.agent_end({}, ctx);
     expect(posted.filter((p) => p.includes("reasoning"))).toEqual([]);
+  });
+
+  it("does not tag thinking chunks", async () => {
+    const { handlers } = await startExtension();
+    await handlers.agent_start({}, ctx);
+    await handlers.message_update(
+      {
+        message: {
+          id: "a4",
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "a".repeat(2000) },
+            { type: "text", text: "final answer" },
+          ],
+        },
+      },
+      ctx,
+    );
+    await handlers.message_end(
+      { message: { id: "a4", role: "assistant", content: [{ type: "text", text: "final answer" }] } },
+      ctx,
+    );
+    await handlers.agent_end({}, ctx);
+    expect(edits.length).toBe(1);
+    expect(edits[0]).toContain("final answer");
   });
 
   it("mirrors locally typed prompts", async () => {

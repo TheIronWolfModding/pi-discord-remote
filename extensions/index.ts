@@ -75,6 +75,7 @@ export default function (pi: ExtensionAPI) {
   let lastCtx: any = null;
   const channelCache = new Map<string, TextChannel>();
   let lastPostedMessageId: string | null = null;
+  let lastTextMessageId: string | null = null;
   let turnPosted = false;
   let typingTimer: ReturnType<typeof setInterval> | null = null;
   interface StreamBuf {
@@ -342,7 +343,10 @@ export default function (pi: ExtensionAPI) {
 
   async function postText(chunk: string): Promise<void> {
     if (!chunk.trim()) return;
-    for (const part of splitMessage(chunk)) await sendToActiveChannel(part);
+    for (const part of splitMessage(chunk)) {
+      await sendToActiveChannel(part);
+      lastTextMessageId = lastPostedMessageId;
+    }
   }
 
   function getStreamBuf(messageId: string): StreamBuf {
@@ -374,6 +378,7 @@ export default function (pi: ExtensionAPI) {
     agentBusy = true;
     streamBuf = null;
     lastPostedMessageId = null;
+    lastTextMessageId = null;
     turnPosted = false;
     lastImageArtifactPath = null;
     startTypingIndicator();
@@ -505,6 +510,21 @@ export default function (pi: ExtensionAPI) {
     stopTypingIndicator();
 
     if (!client) return;
+
+    // Tag the user on the final response (not on thinking/tool chunks).
+    const mentionUser = pendingReplyUserId || activeConfig?.allowedUserIds?.[0] || null;
+    if (activeConfig?.mention !== false && mentionUser && lastTextMessageId) {
+      try {
+        const channel = await getOutputChannel();
+        const msg = channel ? await channel.messages.fetch(lastTextMessageId) : null;
+        const prefix = `<@${mentionUser}> `;
+        if (msg && msg.content.length + prefix.length <= 2000) {
+          await msg.edit(prefix + msg.content);
+        } else {
+          await sendToActiveChannel(`✅ <@${mentionUser}>`);
+        }
+      } catch { /* mention is best-effort */ }
+    }
 
     // Signal end of turn: react ✅ on the last posted message of this turn.
     if (activeConfig?.reactions !== false && lastPostedMessageId && turnPosted) {

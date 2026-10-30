@@ -70,6 +70,7 @@ For CI or headless setups, you can skip `setup` entirely and set these env vars:
 | `steering` | boolean | `true` | Messages sent while Pi is busy steer the running turn instead of being rejected |
 | `mirrorLocalInput` | boolean | `true` | Post prompts typed in the local TUI to the Discord channel (prefix `🖥️`) |
 | `typing` | boolean | `true` | Show a Discord typing indicator while Pi is working |
+| `mention` | boolean | `true` | Tag the user (`<@id>`) on the final response of each turn |
 | `chunkChars` | number | `1900` | Soft chunk size for streamed messages (max 1900) |
 | `keepChannel` | boolean | `false` | Keep the session channel after stop/shutdown instead of deleting it |
 | `autoConnect` | boolean | `false` | Connect on Pi startup (useful for headless/`--print`/RPC sessions) |
